@@ -75,12 +75,6 @@ async function chamarNvidia(systemInstruction, messageText) {
                 top_p: 0.95,
                 max_tokens: 500,
 
-                extra_body: {
-                    chat_template_kwargs: {
-                        enable_thinking: false
-                    }
-                },
-
                 stream: false
             })
         }
@@ -215,6 +209,7 @@ async function connectToWhatsApp() {
         saveCreds
     );
 
+
     sock.ev.on(
         'connection.update',
         (update) => {
@@ -224,6 +219,7 @@ async function connectToWhatsApp() {
                 lastDisconnect,
                 qr
             } = update;
+
 
             if (qr) {
 
@@ -239,11 +235,15 @@ async function connectToWhatsApp() {
                 );
             }
 
+
             if (connection === 'close') {
 
+                const statusCode =
+                    lastDisconnect?.error?.output?.statusCode;
+
                 const shouldReconnect =
-                    lastDisconnect?.error?.output?.statusCode !==
-                    DisconnectReason.loggedOut;
+                    statusCode !== DisconnectReason.loggedOut;
+
 
                 if (shouldReconnect) {
 
@@ -287,27 +287,34 @@ async function connectToWhatsApp() {
                 return;
             }
 
+
             const msg =
                 messages[0];
+
 
             if (!msg?.message) {
                 return;
             }
 
+
             if (msg.key.fromMe) {
                 return;
             }
 
+
             const messageId =
                 msg.key.id;
+
 
             if (processedMessages.has(messageId)) {
                 return;
             }
 
+
             processedMessages.add(
                 messageId
             );
+
 
             setTimeout(
                 () => {
@@ -321,6 +328,7 @@ async function connectToWhatsApp() {
 
             const remoteJid =
                 msg.key.remoteJid;
+
 
             const nomeContato =
                 msg.pushName || 'você';
@@ -339,19 +347,23 @@ async function connectToWhatsApp() {
             const audioMessage =
                 msg.message.audioMessage;
 
+
             if (audioMessage) {
 
                 console.log(
                     `\n🎤 Áudio recebido de ${nomeContato}`
                 );
 
+
                 let tempFilePath = null;
+
 
                 try {
 
                     console.log(
                         '⬇️ Baixando áudio do WhatsApp...'
                     );
+
 
                     const buffer =
                         await downloadMediaMessage(
@@ -368,29 +380,36 @@ async function connectToWhatsApp() {
                             }
                         );
 
+
                     tempFilePath =
                         path.join(
                             __dirname,
                             `temp_${Date.now()}.ogg`
                         );
 
+
                     fs.writeFileSync(
                         tempFilePath,
                         buffer
                     );
 
+
                     let mimeType =
                         audioMessage.mimetype ||
                         'audio/ogg';
 
+
                     if (mimeType.includes(';')) {
+
                         mimeType =
                             mimeType.split(';')[0];
                     }
 
+
                     console.log(
                         '🧠 Transcrevendo localmente...'
                     );
+
 
                     messageText =
                         await transcreverAudioLocal(
@@ -398,9 +417,11 @@ async function connectToWhatsApp() {
                             mimeType
                         );
 
+
                     console.log(
                         `🗣️ Transcrição: "${messageText}"`
                     );
+
 
                 } catch (error) {
 
@@ -409,7 +430,9 @@ async function connectToWhatsApp() {
                         error.message
                     );
 
+
                     try {
+
                         await sock.sendMessage(
                             remoteJid,
                             {
@@ -417,9 +440,12 @@ async function connectToWhatsApp() {
                                     'Não consegui ouvir seu áudio agora. Pode mandar de novo?'
                             }
                         );
+
                     } catch {}
 
+
                     return;
+
 
                 } finally {
 
@@ -429,9 +455,11 @@ async function connectToWhatsApp() {
                     ) {
 
                         try {
+
                             fs.unlinkSync(
                                 tempFilePath
                             );
+
                         } catch {}
                     }
                 }
@@ -501,11 +529,13 @@ Não invente informações que não estejam disponíveis.
 
             let respostaIA;
 
+
             try {
 
                 console.log(
                     '🟢 Enviando para NVIDIA...'
                 );
+
 
                 respostaIA =
                     await chamarNvidia(
@@ -513,9 +543,11 @@ Não invente informações que não estejam disponíveis.
                         messageText
                     );
 
+
                 console.log(
                     '✅ NVIDIA respondeu.'
                 );
+
 
             } catch (error) {
 
@@ -523,6 +555,7 @@ Não invente informações que não estejam disponíveis.
                     '❌ Erro na NVIDIA:',
                     error.message
                 );
+
 
                 respostaIA =
                     'Desculpe, tive um probleminha para responder agora. Pode tentar novamente em alguns instantes?';
@@ -548,9 +581,11 @@ Não invente informações que não estejam disponíveis.
                     }
                 );
 
+
                 console.log(
                     '✅ Mensagem enviada!'
                 );
+
 
             } catch (error) {
 
@@ -563,6 +598,10 @@ Não invente informações que não estejam disponíveis.
     );
 }
 
+
+// ============================================================
+// INICIAR
+// ============================================================
 
 connectToWhatsApp()
     .catch(
