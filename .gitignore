@@ -1,10 +1,10 @@
 node_modules/
 .env
 
+auth_info_baileys/
+
 .wwebjs_auth/
 .wwebjs_cache/
-
-auth_info_baileys/
 
 temp_*.ogg
 temp_*.opus

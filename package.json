@@ -1,7 +1,7 @@
 {
   "name": "but",
   "version": "1.0.0",
-  "description": "Bot de atendimento WhatsApp com NVIDIA NIM e transcrição local",
+  "description": "Bot de WhatsApp com NVIDIA Nemotron e transcrição local via whisper.cpp",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -10,9 +10,9 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@whiskeysockets/baileys": "6.7.24",
+    "@whiskeysockets/baileys": "^7.0.0-rc14",
     "dotenv": "^18.0.6",
-    "pino": "^9.6.0",
+    "pino": "^10.4.0",
     "qrcode-terminal": "^0.12.0"
   }
 }

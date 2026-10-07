@@ -16,7 +16,7 @@ const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY;
 
 const NVIDIA_MODEL =
     process.env.NVIDIA_MODEL ||
-    'deepseek-ai/deepseek-v4.1-flash';
+    'nvidia/nemotron-3-super-120b-a12b';
 
 const NVIDIA_URL =
     'https://integrate.api.nvidia.com/v1/chat/completions';
@@ -28,7 +28,6 @@ const TRANSCRIBER_URL =
 const LINK_AGENDAMENTO =
     process.env.LINK_AGENDAMENTO ||
     'https://seu-site-de-agendamentos.com.br';
-
 
 if (!NVIDIA_API_KEY) {
     console.error('❌ NVIDIA_API_KEY não configurada.');
@@ -72,19 +71,23 @@ async function chamarNvidia(systemInstruction, messageText) {
                     }
                 ],
 
-                temperature: 0.5,
-                top_p: 0.9,
+                temperature: 1.0,
+                top_p: 0.95,
                 max_tokens: 500,
+
+                extra_body: {
+                    chat_template_kwargs: {
+                        enable_thinking: false
+                    }
+                },
 
                 stream: false
             })
         }
     );
 
-
     const responseText =
         await response.text();
-
 
     let data;
 
@@ -96,24 +99,20 @@ async function chamarNvidia(systemInstruction, messageText) {
         );
     }
 
-
     if (!response.ok) {
         throw new Error(
             `NVIDIA HTTP ${response.status}: ${JSON.stringify(data)}`
         );
     }
 
-
     const resposta =
         data?.choices?.[0]?.message?.content;
-
 
     if (!resposta) {
         throw new Error(
             `NVIDIA não retornou texto: ${JSON.stringify(data)}`
         );
     }
-
 
     return resposta.trim();
 }
@@ -131,10 +130,8 @@ async function transcreverAudioLocal(
     const audioBuffer =
         fs.readFileSync(filePath);
 
-
     const formData =
         new FormData();
-
 
     formData.append(
         'file',
@@ -147,20 +144,17 @@ async function transcreverAudioLocal(
         path.basename(filePath)
     );
 
-
     const response =
         await fetch(
-            `${TRANSCRIBER_URL}/transcribe`,
+            `${TRANSCRIBER_URL}/inference`,
             {
                 method: 'POST',
                 body: formData
             }
         );
 
-
     const responseText =
         await response.text();
-
 
     let data;
 
@@ -172,22 +166,25 @@ async function transcreverAudioLocal(
         );
     }
 
-
     if (!response.ok) {
         throw new Error(
             `Transcritor HTTP ${response.status}: ${JSON.stringify(data)}`
         );
     }
 
+    const texto =
+        data?.text ||
+        data?.transcription ||
+        data?.transcript ||
+        '';
 
-    if (!data?.text) {
+    if (!texto) {
         throw new Error(
             `Transcritor não retornou texto: ${JSON.stringify(data)}`
         );
     }
 
-
-    return data.text.trim();
+    return texto.trim();
 }
 
 
@@ -204,7 +201,6 @@ async function connectToWhatsApp() {
         'auth_info_baileys'
     );
 
-
     const sock =
         makeWASocket({
             auth: state,
@@ -214,12 +210,10 @@ async function connectToWhatsApp() {
             })
         });
 
-
     sock.ev.on(
         'creds.update',
         saveCreds
     );
-
 
     sock.ev.on(
         'connection.update',
@@ -230,7 +224,6 @@ async function connectToWhatsApp() {
                 lastDisconnect,
                 qr
             } = update;
-
 
             if (qr) {
 
@@ -246,13 +239,11 @@ async function connectToWhatsApp() {
                 );
             }
 
-
             if (connection === 'close') {
 
                 const shouldReconnect =
                     lastDisconnect?.error?.output?.statusCode !==
                     DisconnectReason.loggedOut;
-
 
                 if (shouldReconnect) {
 
@@ -296,34 +287,27 @@ async function connectToWhatsApp() {
                 return;
             }
 
-
             const msg =
                 messages[0];
-
 
             if (!msg?.message) {
                 return;
             }
 
-
             if (msg.key.fromMe) {
                 return;
             }
 
-
             const messageId =
                 msg.key.id;
-
 
             if (processedMessages.has(messageId)) {
                 return;
             }
 
-
             processedMessages.add(
                 messageId
             );
-
 
             setTimeout(
                 () => {
@@ -337,7 +321,6 @@ async function connectToWhatsApp() {
 
             const remoteJid =
                 msg.key.remoteJid;
-
 
             const nomeContato =
                 msg.pushName || 'você';
@@ -356,23 +339,19 @@ async function connectToWhatsApp() {
             const audioMessage =
                 msg.message.audioMessage;
 
-
             if (audioMessage) {
 
                 console.log(
                     `\n🎤 Áudio recebido de ${nomeContato}`
                 );
 
-
                 let tempFilePath = null;
-
 
                 try {
 
                     console.log(
                         '⬇️ Baixando áudio do WhatsApp...'
                     );
-
 
                     const buffer =
                         await downloadMediaMessage(
@@ -389,35 +368,29 @@ async function connectToWhatsApp() {
                             }
                         );
 
-
                     tempFilePath =
                         path.join(
                             __dirname,
                             `temp_${Date.now()}.ogg`
                         );
 
-
                     fs.writeFileSync(
                         tempFilePath,
                         buffer
                     );
 
-
                     let mimeType =
                         audioMessage.mimetype ||
                         'audio/ogg';
-
 
                     if (mimeType.includes(';')) {
                         mimeType =
                             mimeType.split(';')[0];
                     }
 
-
                     console.log(
                         '🧠 Transcrevendo localmente...'
                     );
-
 
                     messageText =
                         await transcreverAudioLocal(
@@ -425,11 +398,9 @@ async function connectToWhatsApp() {
                             mimeType
                         );
 
-
                     console.log(
                         `🗣️ Transcrição: "${messageText}"`
                     );
-
 
                 } catch (error) {
 
@@ -437,7 +408,6 @@ async function connectToWhatsApp() {
                         '❌ Erro ao transcrever áudio:',
                         error.message
                     );
-
 
                     try {
                         await sock.sendMessage(
@@ -449,9 +419,7 @@ async function connectToWhatsApp() {
                         );
                     } catch {}
 
-
                     return;
-
 
                 } finally {
 
@@ -533,13 +501,11 @@ Não invente informações que não estejam disponíveis.
 
             let respostaIA;
 
-
             try {
 
                 console.log(
                     '🟢 Enviando para NVIDIA...'
                 );
-
 
                 respostaIA =
                     await chamarNvidia(
@@ -547,11 +513,9 @@ Não invente informações que não estejam disponíveis.
                         messageText
                     );
 
-
                 console.log(
                     '✅ NVIDIA respondeu.'
                 );
-
 
             } catch (error) {
 
@@ -560,15 +524,8 @@ Não invente informações que não estejam disponíveis.
                     error.message
                 );
 
-
-                try {
-
-                    respostaIA =
-                        'Desculpe, tive um probleminha para responder agora. Pode tentar novamente em alguns instantes?';
-
-                } catch {
-                    return;
-                }
+                respostaIA =
+                    'Desculpe, tive um probleminha para responder agora. Pode tentar novamente em alguns instantes?';
             }
 
 
@@ -591,11 +548,9 @@ Não invente informações que não estejam disponíveis.
                     }
                 );
 
-
                 console.log(
                     '✅ Mensagem enviada!'
                 );
-
 
             } catch (error) {
 
