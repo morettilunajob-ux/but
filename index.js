@@ -1,77 +1,72 @@
-require('dotenv').config();
-const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
-const OpenAI = require('openai');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { OpenAI } = require('openai');
+const pino = require('pino');
 
-const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY
-});
+// Inicialize a API do OpenAI (certifique-se de que a variável de ambiente OPENAI_API_KEY esteja configurada)
+const openai = new OpenAI();
 
-const client = new Client({
-    authStrategy: new LocalAuth(),
-    puppeteer: {
-        headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--disable-gpu'
-        ]
-    }
-});
+async function connectToWhatsApp() {
+    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
 
-client.on('qr', (qr) => {
-    console.log('NOVO QR CODE GERADO:');
-    qrcode.generate(qr, { small: true });
-});
+    const sock = makeWASocket({
+        auth: state,
+        printQRInTerminal: true,
+        logger: pino({ level: 'silent' })
+    });
 
-client.on('ready', () => {
-    console.log('Tudo certo! A secretária Ana está conectada e rodando.');
-});
+    sock.ev.on('creds.update', saveCreds);
 
-client.on('message', async message => {
-    console.log(`[DEBUG] Mensagem crua recebida de: ${message.from} | Corpo: ${message.body}`);
+    sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect } = update;
+        if (connection === 'close') {
+            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log('Conexão fechada. Reconectando...', shouldReconnect);
+            if (shouldReconnect) {
+                connectToWhatsApp();
+            }
+        } else if (connection === 'open') {
+            console.log('Bot conectado com sucesso!');
+        }
+    });
 
-    if (message.fromMe) return;
+    // Armazenamento simples em memória para evitar duplicidade de mensagens recentes
+    const processedMessages = new Set();
 
-    try {
-        console.log('A enviar mensagem para a OpenAI...');
-        const completion = await openai.chat.completions.create({
-            model: "gpt-4o-mini",
-            messages: [
-                { 
-                    role: "system", 
-                    content: `Você é a Ana, secretária virtual de um(a) psicanalista. Seu tom é extremamente acolhedor, profissional, empático, mas altamente persuasivo e focado em conversão.
-                    
-                    SEU OBJETIVO PRINCIPAL: Acolher a dor ou a busca do cliente, gerar valor sobre o processo terapêutico/psicanalítico e conduzir a pessoa de forma natural, sutil e irresistível a agendar uma sessão.
-                    
-                    DIRETRIZES DE ABORDAGEM:
-                    1. Valide os sentimentos da pessoa com empatia genuína (mostre que você entende o momento dela).
-                    2. Faça perguntas abertas e direcionadas para entender brevemente o que ela está a enfrentar (ansiedade, autoconhecimento, conflitos, etc.).
-                    3. Quebre objeções comuns (medo de julgamento, tempo, dúvida se funciona) com elegância.
-                    4. Sempre finalize direcionando para o agendamento oficial, enviando o link de forma convidativa: https://psicanalise-site.vercel.app/
-                    5. Mantenha as respostas fluidas, naturais e com o tamanho ideal para o WhatsApp (evite textos excessivamente longos ou robóticos).` 
-                },
-                { 
-                    role: "user", 
-                    content: message.body 
-                }
-            ],
-        });
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        if (type !== 'notify') return;
 
-        const respostaIA = completion.choices[0].message.content;
-        console.log(`Resposta gerada pela IA: ${respostaIA}`);
+        const msg = messages[0];
+        if (!msg.message || msg.key.fromMe) return;
+
+        const messageId = msg.key.id;
+        if (processedMessages.has(messageId)) return;
+        processedMessages.add(messageId);
+
+        // Limpa o ID da memória após 1 minuto para não consumir muita RAM
+        setTimeout(() => processedMessages.delete(messageId), 60000);
+
+        const remoteJid = msg.key.remoteJid;
         
-        // Envio corrigido utilizando client.sendMessage para garantir compatibilidade com o chat
-        await client.sendMessage(message.from, respostaIA);
+        // Pega o nome que a pessoa salvou no WhatsApp (pushName) ou define um padrão
+        const nomeContato = msg.pushName || 'Cliente';
 
-    } catch (error) {
-        console.error('Erro ao comunicar com a OpenAI:', error);
-        await client.sendMessage(message.from, 'Desculpe, ocorreu um pequeno erro ao processar a sua mensagem. Como posso ajudar com o seu agendamento?');
-    }
-});
+        // Extrai o texto da mensagem (suporta texto comum ou botões/templates)
+        const messageText = msg.message.conversation || 
+                            msg.message.extendedTextMessage?.text || '';
 
-client.initialize();
+        if (!messageText) return;
+
+        console.log(`Mensagem de ${nomeContato} (${remoteJid}): ${messageText}`);
+
+        try {
+            // Exemplo de integração usando o nome do contato na resposta
+            await sock.sendMessage(remoteJid, { 
+                text: `Olá, ${nomeContato}! Recebi a sua mensagem: "${messageText}". Como posso te ajudar hoje?` 
+            });
+        } catch (error) {
+            console.error('Erro ao enviar mensagem:', error);
+        }
+    });
+}
+
+connectToWhatsApp();
