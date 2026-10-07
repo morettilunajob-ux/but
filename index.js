@@ -4,7 +4,7 @@ const pino = require('pino');
 const qrcode = require('qrcode-terminal');
 
 const openai = new OpenAI();
-const LINK_AGENDAMENTO = "https://seu-site-de-agendamentos.com.br"; // Substitua pelo seu link real
+const LINK_AGENDAMENTO = "https://seu-site-de-agendamentos.com.br"; // Lembre-se de trocar pelo seu link real
 
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
@@ -60,10 +60,11 @@ async function connectToWhatsApp() {
         console.log(`[Nova Mensagem] ${nomeContato} (${remoteJid}): ${messageText}`);
 
         try {
-            await sock.presenceSubscribe(remoteJid);
-            await sock.sendPresenceUpdate('composing', remoteJid);
+            // REMOVIDO O "DIGITANDO...": Ele causa travamento em contatos @lid.
+            
+            console.log('⏳ Pensando na resposta com a Inteligência Artificial...');
 
-            // PERSONALIDADE DA IA ATUALIZADA AQUI:
+            // PERSONALIDADE DA IA ATUALIZADA
             const completion = await openai.chat.completions.create({
                 model: "gpt-4o-mini",
                 messages: [
@@ -81,11 +82,13 @@ async function connectToWhatsApp() {
             });
 
             const respostaIA = completion.choices[0].message.content;
+            console.log(`🤖 IA Respondeu: ${respostaIA}`);
 
             await sock.sendMessage(remoteJid, { text: respostaIA });
+            console.log('✅ Mensagem enviada para o WhatsApp do cliente!');
 
         } catch (error) {
-            console.error('Erro ao processar mensagem com a OpenAI:', error);
+            console.error('❌ Erro ao processar mensagem com a OpenAI:', error);
         }
     });
 }
