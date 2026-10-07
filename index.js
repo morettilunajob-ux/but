@@ -3,31 +3,22 @@ const { OpenAI } = require('openai');
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
 
-// Inicialize a API do OpenAI
-// (A chave de API será lida pelo PM2 através do seu ecosystem.config.js)
 const openai = new OpenAI();
-
-// SEU LINK DE AGENDAMENTO
-const LINK_AGENDAMENTO = "https://seu-site-de-agendamentos.com.br";
+const LINK_AGENDAMENTO = "https://seu-site-de-agendamentos.com.br"; // Substitua pelo seu link real
 
 async function connectToWhatsApp() {
-    // Salva a sessão do WhatsApp na pasta auth_info_baileys
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
 
     const sock = makeWASocket({
         auth: state,
-        // O logger fica silenciado para não poluir a tela, o QR code será impresso manualmente
         logger: pino({ level: 'silent' }) 
     });
 
-    // Salva as credenciais sempre que houver uma atualização
     sock.ev.on('creds.update', saveCreds);
 
-    // Monitora o status da conexão e gera o QR Code
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
         
-        // Exibe o QR Code no terminal de forma legível
         if (qr) {
             console.log('\n--- LEIA O QR CODE ABAIXO PELO SEU WHATSAPP ---');
             qrcode.generate(qr, { small: true });
@@ -35,7 +26,6 @@ async function connectToWhatsApp() {
 
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('Conexão fechada. Reconectando...', shouldReconnect);
             if (shouldReconnect) {
                 connectToWhatsApp();
             }
@@ -44,32 +34,24 @@ async function connectToWhatsApp() {
         }
     });
 
-    // Controle de mensagens em memória para evitar repostas duplicadas/triplicadas
     const processedMessages = new Set();
 
-    // Monitora as mensagens recebidas
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify') return;
 
         const msg = messages[0];
         
-        // Ignora mensagens enviadas pelo próprio bot ou avisos do sistema
         if (!msg.message || msg.key.fromMe) return;
 
-        // Filtro anti-duplicidade
         const messageId = msg.key.id;
         if (processedMessages.has(messageId)) return;
         processedMessages.add(messageId);
 
-        // Limpa o ID da memória após 1 minuto para não pesar a RAM
         setTimeout(() => processedMessages.delete(messageId), 60000);
 
         const remoteJid = msg.key.remoteJid;
-        
-        // Pega o nome que a pessoa salvou no próprio WhatsApp (pushName)
-        const nomeContato = msg.pushName || 'Cliente';
+        const nomeContato = msg.pushName || 'você';
 
-        // Extrai o texto da mensagem suportando diferentes formatos
         const messageText = msg.message.conversation || 
                             msg.message.extendedTextMessage?.text || '';
 
@@ -78,19 +60,21 @@ async function connectToWhatsApp() {
         console.log(`[Nova Mensagem] ${nomeContato} (${remoteJid}): ${messageText}`);
 
         try {
-            // Simula que o bot está "digitando..." para parecer mais natural
             await sock.presenceSubscribe(remoteJid);
             await sock.sendPresenceUpdate('composing', remoteJid);
 
-            // Chamada para a Inteligência Artificial da OpenAI
+            // PERSONALIDADE DA IA ATUALIZADA AQUI:
             const completion = await openai.chat.completions.create({
-                model: "gpt-4o-mini", // Pode mudar para gpt-3.5-turbo se preferir
+                model: "gpt-4o-mini",
                 messages: [
                     {
                         role: "system",
-                        content: `Você é um assistente virtual atencioso de atendimento médico/clínica. O nome do cliente é ${nomeContato}. 
-                        Seu objetivo é tirar dúvidas básicas, ser empático e **sempre conduzir o paciente para agendar a consulta pelo site**. 
-                        Sempre que o paciente demonstrar interesse em marcar, tirar dúvidas sobre horários ou quiser prosseguir, forneça o link de agendamento de forma amigável. O link oficial é: ${LINK_AGENDAMENTO}`
+                        content: `Você é uma atendente humana, gentil e simpática de uma clínica, conversando pelo WhatsApp. O nome do paciente é ${nomeContato}.
+                        Regras OBRIGATÓRIAS:
+                        1. NUNCA diga que você é uma inteligência artificial, robô ou assistente virtual. Aja 100% como uma pessoa real.
+                        2. Fale de forma natural, curta e coloquial. Pareça uma mensagem real de WhatsApp (ex: use "Oi!", "Tudo bem?", e evite frases longas de telemarketing).
+                        3. Não ofereça ajuda com frases robóticas tipo "Como posso te ajudar hoje?". Seja mais casual, como "Oi ${nomeContato}, tudo bem? Em que posso te ajudar?".
+                        4. Quando a pessoa quiser marcar consulta, perguntar de horários ou valores, mande o link de agendamento de forma leve e natural. Exemplo: "Se quiser, você já pode dar uma olhadinha nos horários livres e agendar direto por aqui: ${LINK_AGENDAMENTO}".`
                     },
                     { role: "user", content: messageText }
                 ],
@@ -98,15 +82,10 @@ async function connectToWhatsApp() {
 
             const respostaIA = completion.choices[0].message.content;
 
-            // Envia a resposta final para o WhatsApp
             await sock.sendMessage(remoteJid, { text: respostaIA });
 
         } catch (error) {
             console.error('Erro ao processar mensagem com a OpenAI:', error);
-            // Mensagem de segurança caso a IA caia
-            await sock.sendMessage(remoteJid, { 
-                text: `Olá, ${nomeContato}! Desculpe, tive um pequeno problema técnico. Para agendar sua consulta rapidamente, por favor acesse nosso site: ${LINK_AGENDAMENTO}` 
-            });
         }
     });
 }
