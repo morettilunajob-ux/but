@@ -2,8 +2,11 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = requi
 const { OpenAI } = require('openai');
 const pino = require('pino');
 
-// Inicialize a API do OpenAI (certifique-se de que a variável de ambiente OPENAI_API_KEY esteja configurada)
+// Inicialize a API do OpenAI (certifique-se de que a variável de ambiente OPENAI_API_KEY está configurada na VM)
 const openai = new OpenAI();
+
+// SEU LINK DE AGENDAMENTO
+const LINK_AGENDAMENTO = "https://seu-site-de-agendamentos.com.br";
 
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
@@ -29,7 +32,7 @@ async function connectToWhatsApp() {
         }
     });
 
-    // Armazenamento simples em memória para evitar duplicidade de mensagens recentes
+    // Controle para evitar duplicidade de mensagens recentes
     const processedMessages = new Set();
 
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
@@ -42,15 +45,11 @@ async function connectToWhatsApp() {
         if (processedMessages.has(messageId)) return;
         processedMessages.add(messageId);
 
-        // Limpa o ID da memória após 1 minuto para não consumir muita RAM
         setTimeout(() => processedMessages.delete(messageId), 60000);
 
         const remoteJid = msg.key.remoteJid;
-        
-        // Pega o nome que a pessoa salvou no WhatsApp (pushName) ou define um padrão
         const nomeContato = msg.pushName || 'Cliente';
 
-        // Extrai o texto da mensagem (suporta texto comum ou botões/templates)
         const messageText = msg.message.conversation || 
                             msg.message.extendedTextMessage?.text || '';
 
@@ -59,12 +58,34 @@ async function connectToWhatsApp() {
         console.log(`Mensagem de ${nomeContato} (${remoteJid}): ${messageText}`);
 
         try {
-            // Exemplo de integração usando o nome do contato na resposta
-            await sock.sendMessage(remoteJid, { 
-                text: `Olá, ${nomeContato}! Recebi a sua mensagem: "${messageText}". Como posso te ajudar hoje?` 
+            // Mostra status de "digitando..." para parecer mais natural
+            await sock.presenceSubscribe(remoteJid);
+            await sock.sendPresenceUpdate('composing', remoteJid);
+
+            // Chamada para a Inteligência Artificial da OpenAI
+            const completion = await openai.chat.completions.create({
+                model: "gpt-4o-mini", // ou gpt-3.5-turbo
+                messages: [
+                    {
+                        role: "system",
+                        content: `Você é um assistente virtual atencioso de atendimento médico/clínica. O nome do cliente é ${nomeContato}. 
+                        Seu objetivo é tirar dúvidas básicas, ser empático e **sempre conduzir o paciente para agendar a consulta pelo site**. 
+                        Sempre que o paciente demonstrar interesse em marcar, tirar dúvidas sobre horários ou quiser prosseguir, forneça o link de agendamento de forma amigable. O link oficial é: ${LINK_AGENDAMENTO}`
+                    },
+                    { role: "user", content: messageText }
+                ],
             });
+
+            const respostaIA = completion.choices[0].message.content;
+
+            // Envia a resposta gerada pela IA para o WhatsApp
+            await sock.sendMessage(remoteJid, { text: respostaIA });
+
         } catch (error) {
-            console.error('Erro ao enviar mensagem:', error);
+            console.error('Erro ao processar mensagem com OpenAI:', error);
+            await sock.sendMessage(remoteJid, { 
+                text: `Olá, ${nomeContato}! Desculpe, tive um pequeno problema técnico aqui. Para agendar sua consulta diretamente, acesse nosso site: ${LINK_AGENDAMENTO}` 
+            });
         }
     });
 }
