@@ -64,11 +64,13 @@ client.on('message', async message => {
 
         const respostaIA = completion.choices[0].message.content;
         console.log(`Resposta gerada pela IA: ${respostaIA}`);
-        await message.reply(respostaIA);
+        
+        // Envio corrigido utilizando client.sendMessage para garantir compatibilidade com o chat
+        await client.sendMessage(message.from, respostaIA);
 
     } catch (error) {
         console.error('Erro ao comunicar com a OpenAI:', error);
-        await message.reply('Desculpe, ocorreu um pequeno erro ao processar a sua mensagem. Como posso ajudar com o seu agendamento?');
+        await client.sendMessage(message.from, 'Desculpe, ocorreu um pequeno erro ao processar a sua mensagem. Como posso ajudar com o seu agendamento?');
     }
 });
 
