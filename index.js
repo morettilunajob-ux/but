@@ -1,3 +1,4 @@
+require('dotenv').config();
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const OpenAI = require('openai');
@@ -7,30 +8,43 @@ const openai = new OpenAI({
 });
 
 const client = new Client({
-    authStrategy: new LocalAuth()
+    authStrategy: new LocalAuth(),
+    puppeteer: {
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-gpu'
+        ]
+    }
 });
 
 client.on('qr', (qr) => {
+    console.log('NOVO QR CODE GERADO:');
     qrcode.generate(qr, { small: true });
-    console.log('Escaneie o QR Code acima com o seu WhatsApp.');
 });
 
 client.on('ready', () => {
-    console.log('Tudo certo! O bot secretária está conectado e rodando.');
+    console.log('Tudo certo! A secretária Ana está conectada e rodando.');
 });
 
 client.on('message', async message => {
+    console.log(`[DEBUG] Mensagem crua recebida de: ${message.from} | Corpo: ${message.body}`);
+
     if (message.fromMe) return;
 
     try {
-        console.log(`Mensagem recebida de ${message.from}: ${message.body}`);
-
+        console.log('A enviar mensagem para a OpenAI...');
         const completion = await openai.chat.completions.create({
             model: "gpt-4o-mini",
             messages: [
                 { 
-                    role: "system, 
-                    content: `Você é a secretária virtual de um(a) psicanalista. Seu tom é extremamente acolhedor, profissional, empático, mas altamente persuasivo e focado em conversão.
+                    role: "system", 
+                    content: `Você é a Ana, secretária virtual de um(a) psicanalista. Seu tom é extremamente acolhedor, profissional, empático, mas altamente persuasivo e focado em conversão.
                     
                     SEU OBJETIVO PRINCIPAL: Acolher a dor ou a busca do cliente, gerar valor sobre o processo terapêutico/psicanalítico e conduzir a pessoa de forma natural, sutil e irresistível a agendar uma sessão.
                     
@@ -49,6 +63,7 @@ client.on('message', async message => {
         });
 
         const respostaIA = completion.choices[0].message.content;
+        console.log(`Resposta gerada pela IA: ${respostaIA}`);
         await message.reply(respostaIA);
 
     } catch (error) {
