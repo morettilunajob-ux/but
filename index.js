@@ -1,10 +1,12 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage } = require('@whiskeysockets/baileys');
 const { OpenAI } = require('openai');
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
+const fs = require('fs');
+const path = require('path');
 
 const openai = new OpenAI();
-const LINK_AGENDAMENTO = "https://seu-site-de-agendamentos.com.br"; // Lembre-se de trocar pelo seu link real
+const LINK_AGENDAMENTO = "https://seu-site-de-agendamentos.com.br"; // Substitua pelo link real
 
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
@@ -46,25 +48,58 @@ async function connectToWhatsApp() {
         const messageId = msg.key.id;
         if (processedMessages.has(messageId)) return;
         processedMessages.add(messageId);
-
         setTimeout(() => processedMessages.delete(messageId), 60000);
 
         const remoteJid = msg.key.remoteJid;
         const nomeContato = msg.pushName || 'você';
 
-        const messageText = msg.message.conversation || 
-                            msg.message.extendedTextMessage?.text || '';
+        let messageText = msg.message.conversation || 
+                          msg.message.extendedTextMessage?.text || '';
 
+        // NOVA HABILIDADE: OUVIR ÁUDIOS
+        const isAudio = msg.message.audioMessage;
+        if (isAudio) {
+            console.log(`\n🎵 Áudio recebido de ${nomeContato}. Baixando e transcrevendo...`);
+            try {
+                // Baixa o áudio do WhatsApp
+                const buffer = await downloadMediaMessage(
+                    msg,
+                    'buffer',
+                    { },
+                    { logger: pino({ level: 'silent' }) }
+                );
+                
+                // Salva o arquivo temporariamente na VM
+                const tempFilePath = path.join(__dirname, `temp_${Date.now()}.ogg`);
+                fs.writeFileSync(tempFilePath, buffer);
+
+                // Envia o áudio para o Whisper da OpenAI transcrever
+                const transcription = await openai.audio.transcriptions.create({
+                    file: fs.createReadStream(tempFilePath),
+                    model: 'whisper-1',
+                });
+
+                // Substitui a mensagem vazia pelo texto do áudio
+                messageText = transcription.text;
+                
+                // Deleta o arquivo de áudio da sua VM para não lotar o disco
+                fs.unlinkSync(tempFilePath); 
+                console.log(`🗣️ Transcrição finalizada: "${messageText}"`);
+
+            } catch (error) {
+                console.error('❌ Erro ao transcrever áudio:', error);
+                return;
+            }
+        }
+
+        // Se não for texto nem áudio com transcrição válida, ignora (ex: imagens, figurinhas)
         if (!messageText) return;
 
         console.log(`[Nova Mensagem] ${nomeContato} (${remoteJid}): ${messageText}`);
 
         try {
-            // REMOVIDO O "DIGITANDO...": Ele causa travamento em contatos @lid.
-            
             console.log('⏳ Pensando na resposta com a Inteligência Artificial...');
 
-            // PERSONALIDADE DA IA ATUALIZADA
             const completion = await openai.chat.completions.create({
                 model: "gpt-4o-mini",
                 messages: [
@@ -74,7 +109,7 @@ async function connectToWhatsApp() {
                         Regras OBRIGATÓRIAS:
                         1. NUNCA diga que você é uma inteligência artificial, robô ou assistente virtual. Aja 100% como uma pessoa real.
                         2. Fale de forma natural, curta e coloquial. Pareça uma mensagem real de WhatsApp (ex: use "Oi!", "Tudo bem?", e evite frases longas de telemarketing).
-                        3. Não ofereça ajuda com frases robóticas tipo "Como posso te ajudar hoje?". Seja mais casual, como "Oi ${nomeContato}, tudo bem? Em que posso te ajudar?".
+                        3. Não ofereça ajuda com frases robóticas tipo "Como posso te ajudar hoje?". Seja casual.
                         4. Quando a pessoa quiser marcar consulta, perguntar de horários ou valores, mande o link de agendamento de forma leve e natural. Exemplo: "Se quiser, você já pode dar uma olhadinha nos horários livres e agendar direto por aqui: ${LINK_AGENDAMENTO}".`
                     },
                     { role: "user", content: messageText }
