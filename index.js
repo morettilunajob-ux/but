@@ -1,131 +1,620 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage } = require('@whiskeysockets/baileys');
-const { OpenAI } = require('openai');
+require('dotenv').config();
+
+const {
+    default: makeWASocket,
+    useMultiFileAuthState,
+    DisconnectReason,
+    downloadMediaMessage
+} = require('@whiskeysockets/baileys');
+
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
 const fs = require('fs');
 const path = require('path');
 
-const openai = new OpenAI();
-const LINK_AGENDAMENTO = "https://seu-site-de-agendamentos.com.br"; // Substitua pelo link real
+const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY;
 
-async function connectToWhatsApp() {
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+const NVIDIA_MODEL =
+    process.env.NVIDIA_MODEL ||
+    'deepseek-ai/deepseek-v4.1-flash';
 
-    const sock = makeWASocket({
-        auth: state,
-        logger: pino({ level: 'silent' }) 
-    });
+const NVIDIA_URL =
+    'https://integrate.api.nvidia.com/v1/chat/completions';
 
-    sock.ev.on('creds.update', saveCreds);
+const TRANSCRIBER_URL =
+    process.env.TRANSCRIBER_URL ||
+    'http://127.0.0.1:8765';
 
-    sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect, qr } = update;
-        
-        if (qr) {
-            console.log('\n--- LEIA O QR CODE ABAIXO PELO SEU WHATSAPP ---');
-            qrcode.generate(qr, { small: true });
-        }
+const LINK_AGENDAMENTO =
+    process.env.LINK_AGENDAMENTO ||
+    'https://seu-site-de-agendamentos.com.br';
 
-        if (connection === 'close') {
-            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            if (shouldReconnect) {
-                connectToWhatsApp();
-            }
-        } else if (connection === 'open') {
-            console.log('\n✅ Bot conectado com sucesso e pronto para receber mensagens!');
-        }
-    });
 
-    const processedMessages = new Set();
-
-    sock.ev.on('messages.upsert', async ({ messages, type }) => {
-        if (type !== 'notify') return;
-
-        const msg = messages[0];
-        
-        if (!msg.message || msg.key.fromMe) return;
-
-        const messageId = msg.key.id;
-        if (processedMessages.has(messageId)) return;
-        processedMessages.add(messageId);
-        setTimeout(() => processedMessages.delete(messageId), 60000);
-
-        const remoteJid = msg.key.remoteJid;
-        const nomeContato = msg.pushName || 'você';
-
-        let messageText = msg.message.conversation || 
-                          msg.message.extendedTextMessage?.text || '';
-
-        // NOVA HABILIDADE: OUVIR ÁUDIOS
-        const isAudio = msg.message.audioMessage;
-        if (isAudio) {
-            console.log(`\n🎵 Áudio recebido de ${nomeContato}. Baixando e transcrevendo...`);
-            try {
-                // Baixa o áudio do WhatsApp
-                const buffer = await downloadMediaMessage(
-                    msg,
-                    'buffer',
-                    { },
-                    { logger: pino({ level: 'silent' }) }
-                );
-                
-                // Salva o arquivo temporariamente na VM
-                const tempFilePath = path.join(__dirname, `temp_${Date.now()}.ogg`);
-                fs.writeFileSync(tempFilePath, buffer);
-
-                // Envia o áudio para o Whisper da OpenAI transcrever
-                const transcription = await openai.audio.transcriptions.create({
-                    file: fs.createReadStream(tempFilePath),
-                    model: 'whisper-1',
-                });
-
-                // Substitui a mensagem vazia pelo texto do áudio
-                messageText = transcription.text;
-                
-                // Deleta o arquivo de áudio da sua VM para não lotar o disco
-                fs.unlinkSync(tempFilePath); 
-                console.log(`🗣️ Transcrição finalizada: "${messageText}"`);
-
-            } catch (error) {
-                console.error('❌ Erro ao transcrever áudio:', error);
-                return;
-            }
-        }
-
-        // Se não for texto nem áudio com transcrição válida, ignora (ex: imagens, figurinhas)
-        if (!messageText) return;
-
-        console.log(`[Nova Mensagem] ${nomeContato} (${remoteJid}): ${messageText}`);
-
-        try {
-            console.log('⏳ Pensando na resposta com a Inteligência Artificial...');
-
-            const completion = await openai.chat.completions.create({
-                model: "gpt-4o-mini",
-                messages: [
-                    {
-                        role: "system",
-                        content: `Você é uma atendente humana, gentil e simpática de uma clínica, conversando pelo WhatsApp. O nome do paciente é ${nomeContato}.
-                        Regras OBRIGATÓRIAS:
-                        1. NUNCA diga que você é uma inteligência artificial, robô ou assistente virtual. Aja 100% como uma pessoa real.
-                        2. Fale de forma natural, curta e coloquial. Pareça uma mensagem real de WhatsApp (ex: use "Oi!", "Tudo bem?", e evite frases longas de telemarketing).
-                        3. Não ofereça ajuda com frases robóticas tipo "Como posso te ajudar hoje?". Seja casual.
-                        4. Quando a pessoa quiser marcar consulta, perguntar de horários ou valores, mande o link de agendamento de forma leve e natural. Exemplo: "Se quiser, você já pode dar uma olhadinha nos horários livres e agendar direto por aqui: ${LINK_AGENDAMENTO}".`
-                    },
-                    { role: "user", content: messageText }
-                ],
-            });
-
-            const respostaIA = completion.choices[0].message.content;
-            console.log(`🤖 IA Respondeu: ${respostaIA}`);
-
-            await sock.sendMessage(remoteJid, { text: respostaIA });
-            console.log('✅ Mensagem enviada para o WhatsApp do cliente!');
-
-        } catch (error) {
-            console.error('❌ Erro ao processar mensagem com a OpenAI:', error);
-        }
-    });
+if (!NVIDIA_API_KEY) {
+    console.error('❌ NVIDIA_API_KEY não configurada.');
 }
 
-connectToWhatsApp();
+
+// ============================================================
+// NVIDIA
+// ============================================================
+
+async function chamarNvidia(systemInstruction, messageText) {
+
+    if (!NVIDIA_API_KEY) {
+        throw new Error(
+            'NVIDIA_API_KEY não configurada.'
+        );
+    }
+
+    const response = await fetch(
+        NVIDIA_URL,
+        {
+            method: 'POST',
+
+            headers: {
+                'Authorization': `Bearer ${NVIDIA_API_KEY}`,
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            },
+
+            body: JSON.stringify({
+                model: NVIDIA_MODEL,
+
+                messages: [
+                    {
+                        role: 'system',
+                        content: systemInstruction
+                    },
+                    {
+                        role: 'user',
+                        content: messageText
+                    }
+                ],
+
+                temperature: 0.5,
+                top_p: 0.9,
+                max_tokens: 500,
+
+                stream: false
+            })
+        }
+    );
+
+
+    const responseText =
+        await response.text();
+
+
+    let data;
+
+    try {
+        data = JSON.parse(responseText);
+    } catch {
+        throw new Error(
+            `Resposta inválida da NVIDIA. HTTP ${response.status}: ${responseText}`
+        );
+    }
+
+
+    if (!response.ok) {
+        throw new Error(
+            `NVIDIA HTTP ${response.status}: ${JSON.stringify(data)}`
+        );
+    }
+
+
+    const resposta =
+        data?.choices?.[0]?.message?.content;
+
+
+    if (!resposta) {
+        throw new Error(
+            `NVIDIA não retornou texto: ${JSON.stringify(data)}`
+        );
+    }
+
+
+    return resposta.trim();
+}
+
+
+// ============================================================
+// TRANSCRIÇÃO LOCAL
+// ============================================================
+
+async function transcreverAudioLocal(
+    filePath,
+    mimeType = 'audio/ogg'
+) {
+
+    const audioBuffer =
+        fs.readFileSync(filePath);
+
+
+    const formData =
+        new FormData();
+
+
+    formData.append(
+        'file',
+        new Blob(
+            [audioBuffer],
+            {
+                type: mimeType
+            }
+        ),
+        path.basename(filePath)
+    );
+
+
+    const response =
+        await fetch(
+            `${TRANSCRIBER_URL}/transcribe`,
+            {
+                method: 'POST',
+                body: formData
+            }
+        );
+
+
+    const responseText =
+        await response.text();
+
+
+    let data;
+
+    try {
+        data = JSON.parse(responseText);
+    } catch {
+        throw new Error(
+            `Resposta inválida do transcritor. HTTP ${response.status}: ${responseText}`
+        );
+    }
+
+
+    if (!response.ok) {
+        throw new Error(
+            `Transcritor HTTP ${response.status}: ${JSON.stringify(data)}`
+        );
+    }
+
+
+    if (!data?.text) {
+        throw new Error(
+            `Transcritor não retornou texto: ${JSON.stringify(data)}`
+        );
+    }
+
+
+    return data.text.trim();
+}
+
+
+// ============================================================
+// WHATSAPP
+// ============================================================
+
+async function connectToWhatsApp() {
+
+    const {
+        state,
+        saveCreds
+    } = await useMultiFileAuthState(
+        'auth_info_baileys'
+    );
+
+
+    const sock =
+        makeWASocket({
+            auth: state,
+
+            logger: pino({
+                level: 'silent'
+            })
+        });
+
+
+    sock.ev.on(
+        'creds.update',
+        saveCreds
+    );
+
+
+    sock.ev.on(
+        'connection.update',
+        (update) => {
+
+            const {
+                connection,
+                lastDisconnect,
+                qr
+            } = update;
+
+
+            if (qr) {
+
+                console.log(
+                    '\n--- LEIA O QR CODE PELO SEU WHATSAPP ---'
+                );
+
+                qrcode.generate(
+                    qr,
+                    {
+                        small: true
+                    }
+                );
+            }
+
+
+            if (connection === 'close') {
+
+                const shouldReconnect =
+                    lastDisconnect?.error?.output?.statusCode !==
+                    DisconnectReason.loggedOut;
+
+
+                if (shouldReconnect) {
+
+                    console.log(
+                        '⚠️ WhatsApp desconectado. Reconectando...'
+                    );
+
+                    setTimeout(
+                        connectToWhatsApp,
+                        3000
+                    );
+                }
+
+            } else if (connection === 'open') {
+
+                console.log(
+                    '\n✅ Bot conectado com sucesso!'
+                );
+
+                console.log(
+                    `🧠 NVIDIA: ${NVIDIA_MODEL}`
+                );
+
+                console.log(
+                    `🎤 Transcrição local: ${TRANSCRIBER_URL}`
+                );
+            }
+        }
+    );
+
+
+    const processedMessages =
+        new Set();
+
+
+    sock.ev.on(
+        'messages.upsert',
+        async ({ messages, type }) => {
+
+            if (type !== 'notify') {
+                return;
+            }
+
+
+            const msg =
+                messages[0];
+
+
+            if (!msg?.message) {
+                return;
+            }
+
+
+            if (msg.key.fromMe) {
+                return;
+            }
+
+
+            const messageId =
+                msg.key.id;
+
+
+            if (processedMessages.has(messageId)) {
+                return;
+            }
+
+
+            processedMessages.add(
+                messageId
+            );
+
+
+            setTimeout(
+                () => {
+                    processedMessages.delete(
+                        messageId
+                    );
+                },
+                60000
+            );
+
+
+            const remoteJid =
+                msg.key.remoteJid;
+
+
+            const nomeContato =
+                msg.pushName || 'você';
+
+
+            let messageText =
+                msg.message.conversation ||
+                msg.message.extendedTextMessage?.text ||
+                '';
+
+
+            // =================================================
+            // ÁUDIO
+            // =================================================
+
+            const audioMessage =
+                msg.message.audioMessage;
+
+
+            if (audioMessage) {
+
+                console.log(
+                    `\n🎤 Áudio recebido de ${nomeContato}`
+                );
+
+
+                let tempFilePath = null;
+
+
+                try {
+
+                    console.log(
+                        '⬇️ Baixando áudio do WhatsApp...'
+                    );
+
+
+                    const buffer =
+                        await downloadMediaMessage(
+                            msg,
+                            'buffer',
+                            {},
+                            {
+                                logger: pino({
+                                    level: 'silent'
+                                }),
+
+                                reuploadRequest:
+                                    sock.updateMediaMessage
+                            }
+                        );
+
+
+                    tempFilePath =
+                        path.join(
+                            __dirname,
+                            `temp_${Date.now()}.ogg`
+                        );
+
+
+                    fs.writeFileSync(
+                        tempFilePath,
+                        buffer
+                    );
+
+
+                    let mimeType =
+                        audioMessage.mimetype ||
+                        'audio/ogg';
+
+
+                    if (mimeType.includes(';')) {
+                        mimeType =
+                            mimeType.split(';')[0];
+                    }
+
+
+                    console.log(
+                        '🧠 Transcrevendo localmente...'
+                    );
+
+
+                    messageText =
+                        await transcreverAudioLocal(
+                            tempFilePath,
+                            mimeType
+                        );
+
+
+                    console.log(
+                        `🗣️ Transcrição: "${messageText}"`
+                    );
+
+
+                } catch (error) {
+
+                    console.error(
+                        '❌ Erro ao transcrever áudio:',
+                        error.message
+                    );
+
+
+                    try {
+                        await sock.sendMessage(
+                            remoteJid,
+                            {
+                                text:
+                                    'Não consegui ouvir seu áudio agora. Pode mandar de novo?'
+                            }
+                        );
+                    } catch {}
+
+
+                    return;
+
+
+                } finally {
+
+                    if (
+                        tempFilePath &&
+                        fs.existsSync(tempFilePath)
+                    ) {
+
+                        try {
+                            fs.unlinkSync(
+                                tempFilePath
+                            );
+                        } catch {}
+                    }
+                }
+            }
+
+
+            // =================================================
+            // IGNORA MENSAGENS SEM TEXTO
+            // =================================================
+
+            if (!messageText?.trim()) {
+                return;
+            }
+
+
+            console.log(
+                `\n📩 ${nomeContato} (${remoteJid}): ${messageText}`
+            );
+
+
+            // =================================================
+            // PROMPT
+            // =================================================
+
+            const systemInstruction = `
+Você é uma atendente humana de uma clínica conversando pelo WhatsApp.
+
+Nome do paciente: ${nomeContato}
+
+REGRAS:
+
+1. Responda sempre em português do Brasil.
+
+2. Nunca diga que você é uma inteligência artificial.
+
+3. Nunca diga que é um robô.
+
+4. Nunca diga que é um assistente virtual.
+
+5. Fale de forma natural, como uma atendente humana.
+
+6. Seja curta, direta e coloquial.
+
+7. Não escreva textos longos.
+
+8. Não use linguagem de telemarketing.
+
+9. Não use respostas artificiais como "Como posso ajudá-lo hoje?".
+
+10. Leia o contexto da mensagem antes de responder.
+
+11. Quando o paciente quiser marcar uma consulta, perguntar sobre horários ou valores, envie naturalmente o link de agendamento.
+
+Link:
+${LINK_AGENDAMENTO}
+
+Exemplo:
+"Você pode conferir os horários disponíveis e já agendar por aqui: ${LINK_AGENDAMENTO}"
+
+Não invente informações que não estejam disponíveis.
+`;
+
+
+            // =================================================
+            // NVIDIA
+            // =================================================
+
+            let respostaIA;
+
+
+            try {
+
+                console.log(
+                    '🟢 Enviando para NVIDIA...'
+                );
+
+
+                respostaIA =
+                    await chamarNvidia(
+                        systemInstruction,
+                        messageText
+                    );
+
+
+                console.log(
+                    '✅ NVIDIA respondeu.'
+                );
+
+
+            } catch (error) {
+
+                console.error(
+                    '❌ Erro na NVIDIA:',
+                    error.message
+                );
+
+
+                try {
+
+                    respostaIA =
+                        'Desculpe, tive um probleminha para responder agora. Pode tentar novamente em alguns instantes?';
+
+                } catch {
+                    return;
+                }
+            }
+
+
+            if (!respostaIA) {
+                return;
+            }
+
+
+            console.log(
+                `🤖 Resposta: ${respostaIA}`
+            );
+
+
+            try {
+
+                await sock.sendMessage(
+                    remoteJid,
+                    {
+                        text: respostaIA
+                    }
+                );
+
+
+                console.log(
+                    '✅ Mensagem enviada!'
+                );
+
+
+            } catch (error) {
+
+                console.error(
+                    '❌ Erro ao enviar mensagem:',
+                    error.message
+                );
+            }
+        }
+    );
+}
+
+
+connectToWhatsApp()
+    .catch(
+        error => {
+            console.error(
+                '❌ Erro fatal:',
+                error
+            );
+        }
+    );

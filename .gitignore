@@ -1,4 +1,15 @@
 node_modules/
+.env
+
 .wwebjs_auth/
 .wwebjs_cache/
-.env
+
+auth_info_baileys/
+
+temp_*.ogg
+temp_*.opus
+temp_*.wav
+
+.venv/
+__pycache__/
+*.pyc
